@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RingRing</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #050505; font-family: 'Helvetica Neue', sans-serif; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+        
+        #ui {
+            position: absolute;
+            bottom: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 12px;
+            padding: 16px 24px;
+            background: rgba(20, 20, 20, 0.6);
+            backdrop-filter: blur(12px);
+            border-radius: 50px;
+            border: 1px solid rgba(255,255,255,0.08);
+            z-index: 10;
+        }
+
+        .swatch {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            cursor: pointer;
+            border: 2px solid transparent;
+            transition: all 0.3s ease;
+        }
+
+        .swatch:hover { transform: scale(1.15); }
+        .swatch.active { border-color: white; box-shadow: 0 0 15px rgba(255,255,255,0.3); }
+        
+        .s-gold { background: linear-gradient(135deg, #ffd700, #b8860b); }
+        .s-silver { background: linear-gradient(135deg, #ffffff, #888888); }
+        .s-rosegold { background: linear-gradient(135deg, #eab6a8, #9c5c4d); }
+        .s-black { background: linear-gradient(135deg, #333333, #000000); }
+
+        #loading {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: #666; font-size: 0.8rem; letter-spacing: 2px; pointer-events: none;
+            transition: opacity 0.5s;
+        }
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+    <div id="loading">LOADING HDRI...</div>
+    <div id="ui">
+        <div class="swatch s-gold active" data-mat="gold"></div>
+        <div class="swatch s-silver" data-mat="silver"></div>
+        <div class="swatch s-rosegold" data-mat="rosegold"></div>
+        <div class="swatch s-black" data-mat="black"></div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+        import { BokehPass } from 'three/addons/postprocessing/BokehPass.js';
+        import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+        let scene, camera, renderer, composer, controls, ringMesh;
+
+        const mats = {
+            gold: new THREE.MeshPhysicalMaterial({
+                color: 0xffd700, metalness: 1, roughness: 0.12, 
+                clearcoat: 1, clearcoatRoughness: 0.05, reflectivity: 1
+            }),
+            silver: new THREE.MeshPhysicalMaterial({
+                color: 0xffffff, metalness: 1, roughness: 0.08, 
+                clearcoat: 1, clearcoatRoughness: 0.02, reflectivity: 1
+            }),
+            rosegold: new THREE.MeshPhysicalMaterial({
+                color: 0xc78a7d, metalness: 1, roughness: 0.15, 
+                clearcoat: 0.8, clearcoatRoughness: 0.08, reflectivity: 1
+            }),
+            black: new THREE.MeshPhysicalMaterial({
+                color: 0x111111, metalness: 0.9, roughness: 0.18, 
+                clearcoat: 1, clearcoatRoughness: 0.03, reflectivity: 0.8
+            })
+        };
+
+        init();
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x050505);
+
+            camera = new THREE.PerspectiveCamera(35, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.set(0, 1.5, 6);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            renderer.toneMappingExposure = 1.0;
+            renderer.outputColorSpace = THREE.SRGBColorSpace;
+            document.body.appendChild(renderer.domElement);
+
+            const rgbeLoader = new RGBELoader();
+            rgbeLoader.load('https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/studio_small_09_1k.hdr', (texture) => {
+                texture.mapping = THREE.EquirectangularReflectionMapping;
+                scene.environment = texture;
+                
+                createRing();
+                setupPostProcessing();
+                setupControls();
+                setupUI();
+                
+                document.getElementById('loading').style.opacity = 0;
+                animate();
+            });
+
+            const spotLight = new THREE.SpotLight(0xffffff, 15);
+            spotLight.position.set(5, 10, 5);
+            spotLight.angle = Math.PI / 6;
+            spotLight.penumbra = 1;
+            scene.add(spotLight);
+
+            const rimLight = new THREE.DirectionalLight(0xaaccff, 1.5);
+            rimLight.position.set(-5, 2, -5);
+            scene.add(rimLight);
+        }
+
+        function createRing() {
+            const geo = new THREE.TorusGeometry(1.2, 0.22, 256, 512);
+            ringMesh = new THREE.Mesh(geo, mats.gold);
+            ringMesh.rotation.x = Math.PI / 2.2;
+            scene.add(ringMesh);
+        }
+
+        function setupPostProcessing() {
+            const renderTarget = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {
+                samples: 8,
+                type: THREE.HalfFloatType,
+                colorSpace: THREE.SRGBColorSpace
+            });
+            
+            composer = new EffectComposer(renderer, renderTarget);
+            composer.addPass(new RenderPass(scene, camera));
+
+            const bloom = new UnrealBloomPass(
+                new THREE.Vector2(window.innerWidth, window.innerHeight), 
+                0.15, 
+                0.9, 
+                0.9
+            );
+            composer.addPass(bloom);
+
+            const bokeh = new BokehPass(scene, camera, {
+                focus: 6.0,
+                aperture: 0.00008,
+                maxblur: 0.004
+            });
+            composer.addPass(bokeh);
+
+            composer.addPass(new OutputPass());
+        }
+
+        function setupControls() {
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.03;
+            controls.autoRotate = true;
+            controls.autoRotateSpeed = 1.5;
+            controls.minDistance = 3;
+            controls.maxDistance = 10;
+            controls.enablePan = false;
+        }
+
+        function setupUI() {
+            document.querySelectorAll('.swatch').forEach(el => {
+                el.addEventListener('click', (e) => {
+                    document.querySelectorAll('.swatch').forEach(s => s.classList.remove('active'));
+                    e.target.classList.add('active');
+                    
+                    const matKey = e.target.dataset.mat;
+                    if (mats[matKey]) lerpMaterial(ringMesh.material, mats[matKey]);
+                });
+            });
+        }
+
+        function lerpMaterial(current, target) {
+            const startColor = current.color.clone();
+            const endColor = target.color.clone();
+            const startRough = current.roughness;
+            const endRough = target.roughness;
+            const startCC = current.clearcoat;
+            const endCC = target.clearcoat;
+            
+            let progress = 0;
+            const duration = 60; 
+
+            function step() {
+                progress++;
+                const t = Math.min(progress / duration, 1);
+                const ease = t * (2 - t); 
+
+                current.color.lerpColors(startColor, endColor, ease);
+                current.roughness = startRough + (endRough - startRough) * ease;
+                current.clearcoat = startCC + (endCC - startCC) * ease;
+                
+                if (t < 1) requestAnimationFrame(step);
+                else current.copy(target);
+            }
+            step();
+        }
+
+        function onResize() {
+            const w = window.innerWidth;
+            const h = window.innerHeight;
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+            composer.setSize(w, h);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            composer.render();
+        }
+
+        window.addEventListener('resize', onResize);
+    </script>
+</body>
+</html>
